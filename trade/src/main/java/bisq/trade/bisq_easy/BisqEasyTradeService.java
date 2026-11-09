@@ -18,6 +18,7 @@
 package bisq.trade.bisq_easy;
 
 import bisq.account.payment_method.BitcoinPaymentMethodSpec;
+import bisq.account.payment_method.BitcoinPaymentRail;
 import bisq.account.payment_method.fiat.FiatPaymentMethodSpec;
 import bisq.bonded_roles.release.AppType;
 import bisq.bonded_roles.security_manager.alert.AlertService;
@@ -76,6 +77,8 @@ import bisq.trade.bisq_easy.protocol.messages.BisqEasyTakeOfferRequestValidator;
 import bisq.trade.bisq_easy.protocol.messages.BisqEasyTradeMessage;
 import bisq.trade.bisq_easy.validation.BisqEasySellerReputationValidator;
 import bisq.trade.bisq_easy.validation.BisqEasyTradeChatChannelValidator;
+import bisq.trade.bitvm3.NovaChainStatement;
+import bisq.trade.bitvm3.ProvenBtcConfirmationPolicy;
 import bisq.trade.exceptions.TradeProtocolException;
 import bisq.trade.exceptions.TradeProtocolFailure;
 import bisq.trade.protocol.handler.TradeMessageHandler;
@@ -134,15 +137,31 @@ public class BisqEasyTradeService extends RateLimitedPersistenceClient<BisqEasyT
     // request at the same time. The lock makes the check for an existing trade, the verification of the request and the
     // adding of the new trade one step (docs/specifications/trade/take-offer-request-validation.md).
     private final Object tradeCreationLock = new Object();
+    private final ProvenBtcConfirmationPolicy provenBtcConfirmationPolicy;
 
     public BisqEasyTradeService(ServiceProvider serviceProvider, AppType appType) {
-        this(serviceProvider, appType, new BisqEasyProtocolRegistry());
+        this(serviceProvider, appType, ProvenBtcConfirmationPolicy.disabled());
+    }
+
+    public BisqEasyTradeService(ServiceProvider serviceProvider,
+                                AppType appType,
+                                ProvenBtcConfirmationPolicy provenBtcConfirmationPolicy) {
+        this(serviceProvider, appType, new BisqEasyProtocolRegistry(), provenBtcConfirmationPolicy);
     }
 
     @VisibleForTesting
     BisqEasyTradeService(ServiceProvider serviceProvider, AppType appType, BisqEasyProtocolRegistry protocolRegistry) {
+        this(serviceProvider, appType, protocolRegistry, ProvenBtcConfirmationPolicy.disabled());
+    }
+
+    @VisibleForTesting
+    BisqEasyTradeService(ServiceProvider serviceProvider,
+                         AppType appType,
+                         BisqEasyProtocolRegistry protocolRegistry,
+                         ProvenBtcConfirmationPolicy provenBtcConfirmationPolicy) {
         this.serviceProvider = serviceProvider;
         this.protocolRegistry = protocolRegistry;
+        this.provenBtcConfirmationPolicy = provenBtcConfirmationPolicy;
         networkService = serviceProvider.getNetworkService();
         identityService = serviceProvider.getIdentityService();
         settingsService = serviceProvider.getSettingsService();
@@ -418,8 +437,51 @@ public class BisqEasyTradeService extends RateLimitedPersistenceClient<BisqEasyT
         applyUserTradeAction(trade, new BisqEasyConfirmBtcSentEvent(paymentProof));
     }
 
+    // With proven BTC confirmation enabled, the buyer's node of a main-chain trade confirms the BTC only through
+    // buyerConfirmBtcReceivedWithProof (docs/specifications/trade/bisq-easy-proven-btc-payment.md).
     public void btcConfirmed(BisqEasyTrade trade) {
+        if (requiresProvenBtcConfirmation(trade)) {
+            throw new TradeActionNotAppliedException("Trade " + trade.getId() +
+                    ": proven BTC confirmation is enabled, so the buyer confirms the BTC with a payment proof");
+        }
         handleBisqEasyTradeEvent(trade, new BisqEasyBtcConfirmedEvent());
+    }
+
+    /**
+     * The buyer confirms the receipt of the BTC of a main-chain trade with a statement of the nova-bitvm3 M16 guest and
+     * its SP1 proof. The statement must show an output to the buyer's bitcoin payment data with at least the trade
+     * amount and the configured confirmations, and the seller's txid if the seller reported one.
+     *
+     * @throws bisq.trade.bitvm3.ProvenPaymentException if the statement or the proof does not show that payment
+     * @throws TradeActionNotAppliedException          if the feature is disabled or the trade is not a main-chain
+     *                                                 trade of the buyer with bitcoin payment data
+     */
+    public NovaChainStatement.PaymentRecord buyerConfirmBtcReceivedWithProof(BisqEasyTrade trade,
+                                                                             byte[] statement,
+                                                                             byte[] programVkDigest,
+                                                                             byte[] proof) {
+        if (!requiresProvenBtcConfirmation(trade)) {
+            throw new TradeActionNotAppliedException("Trade " + trade.getId() +
+                    ": proven BTC confirmation applies only to the buyer of a main-chain trade with the feature enabled");
+        }
+        String bitcoinPaymentData = trade.getBitcoinPaymentData()
+                .orElseThrow(() -> new TradeActionNotAppliedException("Trade " + trade.getId() + " has no bitcoin payment data"));
+        NovaChainStatement.PaymentRecord record = provenBtcConfirmationPolicy.verify(bitcoinPaymentData,
+                trade.getPaymentProof(),
+                trade.getContract().getBaseSideAmount(),
+                statement,
+                programVkDigest,
+                proof);
+        log.info("Trade {}: BTC payment proven in txid {} output {}, {} sats, {} confirmations",
+                trade.getId(), record.getTxidDisplayHex(), record.getVout(), record.getValueSats(), record.getConfirmations());
+        handleBisqEasyTradeEvent(trade, new BisqEasyBtcConfirmedEvent());
+        return record;
+    }
+
+    private boolean requiresProvenBtcConfirmation(BisqEasyTrade trade) {
+        return provenBtcConfirmationPolicy.isEnabled() &&
+                trade.isBuyer() &&
+                trade.getContract().getBaseSidePaymentMethodSpec().getPaymentMethod().getPaymentRail() == BitcoinPaymentRail.MAIN_CHAIN;
     }
 
     public void rejectTrade(BisqEasyTrade trade) {

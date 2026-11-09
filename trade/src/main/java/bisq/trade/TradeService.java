@@ -31,6 +31,8 @@ import bisq.persistence.PersistenceService;
 import bisq.settings.SettingsService;
 import bisq.support.SupportService;
 import bisq.trade.bisq_easy.BisqEasyTradeService;
+import bisq.trade.bitvm3.ProvenBtcConfirmationPolicy;
+import bisq.trade.bitvm3.SnarkProofVerifier;
 import bisq.trade.mu_sig.DelayedPayoutTxReceiverService;
 import bisq.trade.mu_sig.MuSigTradeService;
 import bisq.user.UserService;
@@ -45,13 +47,20 @@ public class TradeService implements Service, ServiceProvider {
     @Getter
     public static class Config {
         private final com.typesafe.config.Config muSigConfig;
+        private final ProvenBtcConfirmationPolicy.Config provenBtcConfirmationConfig;
 
         public Config(com.typesafe.config.Config muSigConfig) {
+            this(muSigConfig, ProvenBtcConfirmationPolicy.Config.disabled());
+        }
+
+        public Config(com.typesafe.config.Config muSigConfig,
+                      ProvenBtcConfirmationPolicy.Config provenBtcConfirmationConfig) {
             this.muSigConfig = muSigConfig;
+            this.provenBtcConfirmationConfig = provenBtcConfirmationConfig;
         }
 
         public static Config from(com.typesafe.config.Config config) {
-            return new Config(config.getConfig("muSig"));
+            return new Config(config.getConfig("muSig"), ProvenBtcConfirmationPolicy.Config.from(config));
         }
     }
 
@@ -100,7 +109,10 @@ public class TradeService implements Service, ServiceProvider {
 
         delayedPayoutTxReceiverService = new DelayedPayoutTxReceiverService(burningmanService);
 
-        bisqEasyTradeService = new BisqEasyTradeService(this, appType);
+        // No Java SNARK verifier exists yet, so with the flag enabled every proof is rejected
+        // (docs/specifications/trade/bisq-easy-proven-btc-payment.md).
+        bisqEasyTradeService = new BisqEasyTradeService(this, appType,
+                new ProvenBtcConfirmationPolicy(config.getProvenBtcConfirmationConfig(), SnarkProofVerifier.REJECT_ALL));
         muSigTradeService = new MuSigTradeService(MuSigTradeService.Config.from(config.getMuSigConfig()), this, appType);
     }
 
