@@ -32,7 +32,6 @@ import bisq.settings.SettingsService;
 import bisq.support.SupportService;
 import bisq.trade.bisq_easy.BisqEasyTradeService;
 import bisq.trade.bitvm3.ProvenBtcConfirmationPolicy;
-import bisq.trade.bitvm3.SnarkProofVerifier;
 import bisq.trade.mu_sig.DelayedPayoutTxReceiverService;
 import bisq.trade.mu_sig.MuSigTradeService;
 import bisq.user.UserService;
@@ -109,10 +108,11 @@ public class TradeService implements Service, ServiceProvider {
 
         delayedPayoutTxReceiverService = new DelayedPayoutTxReceiverService(burningmanService);
 
-        // No Java SNARK verifier exists yet, so with the flag enabled every proof is rejected
+        // Without a configured m13-verify command every proof is rejected
         // (docs/specifications/trade/bisq-easy-proven-btc-payment.md).
+        ProvenBtcConfirmationPolicy.Config provenBtcConfirmationConfig = config.getProvenBtcConfirmationConfig();
         bisqEasyTradeService = new BisqEasyTradeService(this, appType,
-                new ProvenBtcConfirmationPolicy(config.getProvenBtcConfirmationConfig(), SnarkProofVerifier.REJECT_ALL));
+                new ProvenBtcConfirmationPolicy(provenBtcConfirmationConfig, provenBtcConfirmationConfig.createProofVerifier()));
         muSigTradeService = new MuSigTradeService(MuSigTradeService.Config.from(config.getMuSigConfig()), this, appType);
     }
 

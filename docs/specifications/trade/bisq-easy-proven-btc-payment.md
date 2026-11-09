@@ -64,11 +64,12 @@ Trade rules:
 
 - One payment, several trades: rules 1 to 14 do not bind a payment to one trade. A buyer who reuses an address in two trades with the same amount could see one payment proven twice. The node must reject an outpoint (txid and vout) that it has already used for another trade before the feature can be on by default. This draft does not store used outpoints yet.
 - Freshness: the proven tip can be old. Rule 6 limits a forged chain, not an old honest chain. A reorganization deeper than the confirmations can remove the payment after the proof was made. The minimum confirmations should match the trade amount.
+- The `m13-verify` binary decides rule 14, so the node trusts the configured command. Only the node's own configuration sets it, never a peer. The node limits the proof to 4 MiB before it writes it to disk, and it limits the process output it reads.
 - The statement and proof come from the seller or from a proving service. Both are untrusted input. The parser reads fixed-size fields only and does not allocate by a length taken from the input.
 
 ## Limitations
 
-- No Java SNARK verifier exists. The node needs the native `m13-verify` or an evaluation of the M14 garbled circuit, plugged in as the SNARK verifier. Until one is plugged in, every proof is rejected, so with the feature on the buyer of a main-chain trade cannot confirm the BTC. This is why the feature is off by default.
+- The SNARK verifier is the native `m13-verify verify-v2` (nova-bitvm3 M13, transcript v2, the proof format that the M14 garbled circuit evaluates). The node runs it as an external process. The node writes the expected statement: the pinned wrap key, the pinned recursion key root, the program verifying key digest, and SHA-256 of the statement bytes. A proof counts as accepted only if the process exits with 0 and reports `verified` for that statement digest. A timeout, a missing binary, or an I/O error counts as rejected. Without a configured command, every proof is rejected, so with the feature on the buyer of a main-chain trade cannot confirm the BTC. Bisq has no Java implementation of the verifier.
 - The program verifying key digest of the M16 guest is not pinned yet. The mainnet header-chain fold that its first proof depends on is still running. The digest set is a configuration value, so it can be added without a code change.
 - The cost of a proof is high: about 34 x 10^9 SP1 instructions, about 5 GPU hours per mainnet proof on a laptop. A garbled verifier instance is 12.6 GB. A proving service per trade is not practical yet. A proof for a batch of payments, or a proof made only on dispute, is cheaper.
 - The buyer's desktop UI and the API have no input for the statement and the proof yet.
@@ -76,11 +77,12 @@ Trade rules:
 ## Compatibility
 
 - No message, protobuf, or storage change. The proof is checked only on the buyer's own node. The peer sees the same trade messages as before.
-- Configuration: `trade.bisqEasy.provenBtcConfirmation` with `enabled` (default false), `network` (`MAINNET` or `TESTNET4`), `minConfirmations` (default 1), `minTipChainworkHex` (default 0), and `trustedProgramVkDigests` (hex, default empty). A missing block means off.
+- Configuration: `trade.bisqEasy.provenBtcConfirmation` with `enabled` (default false), `network` (`MAINNET` or `TESTNET4`), `minConfirmations` (default 1), `minTipChainworkHex` (default 0), `trustedProgramVkDigests` (hex, default empty), and `m13Verify` with `command` (the program and leading arguments, default empty), `pathStyle` (`NATIVE`, or `WSL` for a Linux build run through `wsl.exe` on Windows), and `timeoutSeconds` (default 120). A missing block means off.
 
 ## Source of the pins
 
 The pins and the layout come from the nova-bitvm3 handoff (`garbled-snark-verifier/nova-bitvm3/HANDOFF.md`) and the M16 guest (commit `d4aefcd`):
 - mainnet k = 1 key: compressed digest `6aa50d09...da1d`, raw digest `4e815db8...7615`;
 - testnet4 k = 1 key: compressed digest `6894f490...c12a`, raw digest `63f91f1e...d20e`;
+- the M13 final layer, the same for every guest: wrap key SHA-256 `d42c63e3...b0d7`, recursion key root `7487c217...f257` (`nova-bitvm3/m13/pins.json`);
 - the genesis state digests are SHA-256 of z0 taken from real guest output: the M16 block-170 test statement (`67a9deb9...`) for mainnet and guest A's proven testnet4 statement (`d3b478b0...`) for testnet4.

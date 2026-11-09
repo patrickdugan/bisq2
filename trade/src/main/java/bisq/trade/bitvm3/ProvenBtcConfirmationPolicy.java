@@ -22,6 +22,7 @@ import lombok.Getter;
 import lombok.ToString;
 
 import java.math.BigInteger;
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 
@@ -42,12 +43,28 @@ public final class ProvenBtcConfirmationPolicy {
         private final long minConfirmations;
         private final BigInteger minTipChainwork;
         private final List<byte[]> trustedProgramVkDigests;
+        // m13-verify command and leading arguments; empty means no SNARK verifier, so every proof is rejected.
+        private final List<String> m13VerifyCommand;
+        private final M13ProcessProofVerifier.PathStyle m13VerifyPathStyle;
+        private final Duration m13VerifyTimeout;
 
         public Config(boolean enabled,
                       NovaNetworkPin network,
                       long minConfirmations,
                       BigInteger minTipChainwork,
                       List<byte[]> trustedProgramVkDigests) {
+            this(enabled, network, minConfirmations, minTipChainwork, trustedProgramVkDigests, List.of(),
+                    M13ProcessProofVerifier.PathStyle.NATIVE, Duration.ofSeconds(120));
+        }
+
+        public Config(boolean enabled,
+                      NovaNetworkPin network,
+                      long minConfirmations,
+                      BigInteger minTipChainwork,
+                      List<byte[]> trustedProgramVkDigests,
+                      List<String> m13VerifyCommand,
+                      M13ProcessProofVerifier.PathStyle m13VerifyPathStyle,
+                      Duration m13VerifyTimeout) {
             if (minConfirmations < 1) {
                 throw new IllegalArgumentException("minConfirmations must be at least 1");
             }
@@ -56,6 +73,19 @@ public final class ProvenBtcConfirmationPolicy {
             this.minConfirmations = minConfirmations;
             this.minTipChainwork = minTipChainwork;
             this.trustedProgramVkDigests = trustedProgramVkDigests.stream().map(byte[]::clone).toList();
+            this.m13VerifyCommand = List.copyOf(m13VerifyCommand);
+            this.m13VerifyPathStyle = m13VerifyPathStyle;
+            this.m13VerifyTimeout = m13VerifyTimeout;
+        }
+
+        /**
+         * The configured {@link M13ProcessProofVerifier}, or {@link SnarkProofVerifier#REJECT_ALL} without a command.
+         */
+        public SnarkProofVerifier createProofVerifier() {
+            if (m13VerifyCommand.isEmpty()) {
+                return SnarkProofVerifier.REJECT_ALL;
+            }
+            return new M13ProcessProofVerifier(m13VerifyCommand, m13VerifyPathStyle, m13VerifyTimeout);
         }
 
         public static Config disabled() {
@@ -81,7 +111,17 @@ public final class ProvenBtcConfirmationPolicy {
             List<byte[]> digests = c.hasPath("trustedProgramVkDigests")
                     ? c.getStringList("trustedProgramVkDigests").stream().map(Hex::decode).toList()
                     : List.of();
-            return new Config(enabled, network, minConfirmations, minTipChainwork, digests);
+            List<String> m13VerifyCommand = c.hasPath("m13Verify.command")
+                    ? c.getStringList("m13Verify.command")
+                    : List.of();
+            M13ProcessProofVerifier.PathStyle pathStyle = c.hasPath("m13Verify.pathStyle")
+                    ? M13ProcessProofVerifier.PathStyle.valueOf(c.getString("m13Verify.pathStyle"))
+                    : M13ProcessProofVerifier.PathStyle.NATIVE;
+            Duration timeout = c.hasPath("m13Verify.timeoutSeconds")
+                    ? Duration.ofSeconds(c.getLong("m13Verify.timeoutSeconds"))
+                    : Duration.ofSeconds(120);
+            return new Config(enabled, network, minConfirmations, minTipChainwork, digests, m13VerifyCommand,
+                    pathStyle, timeout);
         }
     }
 
